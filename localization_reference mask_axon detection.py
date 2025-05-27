@@ -119,6 +119,12 @@ def define_soma_circle(image):
     r = np.sqrt(c[2] + cx**2 + cy**2)
     return (cy, cx), r
 
+def disk_mask(center, radius, shape):
+    mask = np.zeros(shape, dtype=bool)
+    rr, cc = disk(center, radius, shape=shape)
+    mask[rr, cc] = True
+    return mask
+
 soma_center, soma_radius = define_soma_circle(ref_image)
 if soma_center is None:
     print("Soma center not defined.")
@@ -148,7 +154,7 @@ def calculate_mean_intensity(image, mask):
     return np.mean(image[mask])
 
 def get_ring_intensities(image, center, radii, structure_mask):
-    ring_intensities = []
+    intensities = []
     for i in range(len(radii)-1):
         inner_r = radii[i]
         outer_r = radii[i + 1]
@@ -160,20 +166,26 @@ def get_ring_intensities(image, center, radii, structure_mask):
         mask_inner[rr_inner, cc_inner] = True
         ring_mask = mask_outer & ~mask_inner
         ring_mask &= structure_mask
-        ring_intensities.append(calculate_mean_intensity(image, ring_mask))
-    return ring_intensities
+        intensities.append(calculate_mean_intensity(image, ring_mask))
+    return intensities
 
 ref_mask = ref_mask_holder['mask']
-ref_rings = get_ring_intensities(ref_image, soma_center, ring_radii, ref_mask)
-tgt_rings = get_ring_intensities(tgt_image, soma_center, ring_radii, ref_mask)
+
+# Soma intensity in ring 0
+soma_mask = disk_mask(soma_center, soma_radius, ref_image.shape)
+ref_soma_val = calculate_mean_intensity(ref_image, soma_mask & ref_mask)
+tgt_soma_val = calculate_mean_intensity(tgt_image, soma_mask & ref_mask)
+
+ref_rings = [ref_soma_val] + get_ring_intensities(ref_image, soma_center, ring_radii, ref_mask)
+tgt_rings = [tgt_soma_val] + get_ring_intensities(tgt_image, soma_center, ring_radii, ref_mask)
 
 # === Axon Detection (Target Mask via GUI) ===
 print("Now select an image to define the AXON mask (typically the TARGET image)...")
 axon_img_path = filedialog.askopenfilename(title="Select the image for AXON detection", filetypes=[("TIFF files", "*.tif *.tiff"), ("All files", "*.*")])
 if not axon_img_path:
     print("No axon image selected. Skipping axon detection...")
-    axon_ref_rings = [0]*len(ring_radii[:-1])
-    axon_tgt_rings = [0]*len(ring_radii[:-1])
+    axon_ref_rings = [0]*(len(ring_radii))
+    axon_tgt_rings = [0]*(len(ring_radii))
 else:
     axon_image = load_image(axon_img_path)
     axon_mask_holder = {}
@@ -207,14 +219,18 @@ else:
     plt.show()
 
     axon_mask = axon_mask_holder['mask']
-    axon_ref_rings = get_ring_intensities(ref_image, soma_center, ring_radii, axon_mask)
-    axon_tgt_rings = get_ring_intensities(tgt_image, soma_center, ring_radii, axon_mask)
+
+    axon_ref_soma = calculate_mean_intensity(ref_image, soma_mask & axon_mask)
+    axon_tgt_soma = calculate_mean_intensity(tgt_image, soma_mask & axon_mask)
+
+    axon_ref_rings = [axon_ref_soma] + get_ring_intensities(ref_image, soma_center, ring_radii, axon_mask)
+    axon_tgt_rings = [axon_tgt_soma] + get_ring_intensities(tgt_image, soma_center, ring_radii, axon_mask)
 
 # === Save to Excel ===
 def save_ring_intensities_to_excel(ref_vals, tgt_vals, axon_ref_vals, axon_tgt_vals, ring_radii, ref_path, soma_radius=0):
-    inner_radii = list(ring_radii[:-1])
-    outer_radii = list(ring_radii[1:])
-    ring_labels = ['Ring ' + str(i+1) for i in range(len(ref_vals))]
+    inner_radii = [0] + list(ring_radii[:-1])
+    outer_radii = [soma_radius] + list(ring_radii[1:])
+    ring_labels = ['Soma'] + ['Ring ' + str(i+1) for i in range(len(ring_radii) - 1)]
 
     data = {
         'Ring': ring_labels,
